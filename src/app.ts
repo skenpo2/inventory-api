@@ -4,7 +4,6 @@ import { Prisma } from './prisma.js';
 import { HttpError } from './lib/http.js';
 import { productsRouter } from './routes/products.routes.js';
 import { authRouter } from './routes/auth.routes.js';
-import cors from 'cors';
 
 export const app = express();
 
