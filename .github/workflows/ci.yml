@@ -1,0 +1,45 @@
+# The name shown in the GitHub "Actions" tab
+name: CI
+
+# WHEN does this run? (the "trigger")
+on:
+  push:
+    branches: [main]
+
+  pull_request:
+    branches: [main]
+  workflow_dispatch: # adds a "Run workflow" button in the Actions tab
+
+# WHAT runs? Jobs run in PARALLEL, each on its own fresh virtual machine.
+jobs:
+  api:
+    name: API – typecheck & build
+    runs-on: ubuntu-latest # the machine (a "runner") GitHub lends you
+    defaults:
+      run:
+        working-directory: inventory-api # every `run:` step starts here
+    env:
+      # prisma.config.ts reads this. `prisma generate` doesn't connect,
+      # so a dummy value is fine; real secrets would come from ${{ secrets.X }}
+      DATABASE_URL: postgresql://user:pass@localhost:5432/dummy
+
+    # Steps run IN ORDER. If one fails, the job stops and goes red.
+    steps:
+      # 1. The VM starts empty. This clones your repo into it.
+      - uses: actions/checkout@v4
+
+      # 2. Install Node + cache node_modules downloads between runs
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: inventory-api/package-lock.json
+
+      # 3. `npm ci` = clean, exact install from package-lock.json (use in CI, not `npm install`)
+      - run: npm ci
+
+      # 4. generated/ is gitignored, so the Prisma client must be built here
+      - run: npx prisma generate
+
+      # 5. The actual check: does the TypeScript compile?
+      - run: npm run build

@@ -1,0 +1,36 @@
+# ---- build stage: install everything, generate the Prisma client, compile TS ----
+FROM node:22-alpine AS build
+WORKDIR /app
+
+# Copy manifests first so this layer is cached until dependencies actually change.
+COPY package.json package-lock.json ./
+RUN npm ci
+
+COPY . .
+
+# Prisma 7 generates a TypeScript client into ./generated, so it must run
+# BEFORE tsc — the compile step type-checks against it.
+RUN npx prisma generate && npm run build
+
+# ---- runtime stage: the image that actually ships ----
+FROM node:22-alpine AS runtime
+WORKDIR /app
+ENV NODE_ENV=production
+
+# node_modules comes over whole (dev deps included) because the entrypoint
+# runs the Prisma CLI for migrations. Swap to `npm ci --omit=dev` + a separate
+# migration job if you want a slimmer image.
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/dist ./dist
+COPY --from=build /app/prisma ./prisma
+COPY --from=build /app/prisma.config.ts ./prisma.config.ts
+COPY --from=build /app/package.json ./package.json
+
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh && chown -R node:node /app
+
+USER node
+EXPOSE 5000
+
+ENTRYPOINT ["docker-entrypoint.sh"]
+CMD ["node", "dist/server.js"]
