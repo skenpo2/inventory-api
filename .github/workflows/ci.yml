@@ -31,10 +31,8 @@ jobs:
       # 2. Install Node + cache node_modules downloads between runs
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
-          cache-dependency-path: inventory-api/package-lock.json
-
       # 3. `npm ci` = clean, exact install from package-lock.json (use in CI, not `npm install`)
       - run: npm ci
 
