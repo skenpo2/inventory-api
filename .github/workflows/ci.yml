@@ -15,9 +15,8 @@ jobs:
   api:
     name: API – typecheck & build
     runs-on: ubuntu-latest # the machine (a "runner") GitHub lends you
-    defaults:
-      run:
-        working-directory: inventory-api # every `run:` step starts here
+    # No working-directory needed: this repo's root IS the API
+    # (package.json is at the top level after checkout).
     env:
       # prisma.config.ts reads this. `prisma generate` doesn't connect,
       # so a dummy value is fine; real secrets would come from ${{ secrets.X }}
