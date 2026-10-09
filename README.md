@@ -1,121 +1,168 @@
 # inventory-api
 
-Simple inventory management API. Express 5 + TypeScript + Prisma 7 + Postgres. No auth.
+Multi-tenant inventory API with real auth. Express 5 + TypeScript + Prisma 7 + Postgres.
+
+- email/password signup & login (bcrypt)
+- "Continue with Google" (Passport, no sessions)
+- short-lived JWT access token + rotating refresh token in an httpOnly cookie
+- organizations, invitations and roles (`OWNER` / `ADMIN` / `MEMBER`)
+- every protected route checks the caller's role **on the server**
 
 ## Setup
 
 ```bash
 npm install
-npx prisma migrate dev     # applies migrations to the DB in .env
-npm run seed               # loads 10 sample products
-npm run dev                # tsx watch, http://localhost:5000
+cp .env.example .env        # then set JWT_ACCESS_SECRET
+npx prisma migrate dev      # creates the inventory_auth database + tables
+npm run seed                # demo users, orgs and products
+npm run dev                 # http://localhost:5000
 ```
 
-`.env` points at the local Docker Postgres:
+Seeded accounts (password `password123`):
 
-```
-DATABASE_URL=postgres://postgres:postgres@localhost:5432/inventory
-PORT=5000
-```
+| email               | org      | role   |
+| ------------------- | -------- | ------ |
+| `owner@acme.test`   | Acme Inc | OWNER  |
+| `admin@acme.test`   | Acme Inc | ADMIN  |
+| `member@acme.test`  | Acme Inc | MEMBER |
+| `owner@globex.test` | Globex   | OWNER  |
 
-## Scripts
+Globex exists so you can prove one tenant can't touch another's data.
 
-| script          | what it does                  |
-| --------------- | ----------------------------- |
-| `npm run dev`   | watch mode via tsx            |
-| `npm run build` | compile to `dist/`            |
-| `npm start`     | run the compiled build        |
-| `npm run seed`  | reset + load sample products  |
+## Authentication vs authorization
 
-## Model
+- **Authentication** — _who are you?_ `requireAuth` verifies the JWT and sets `req.userId`.
+- **Authorization** — _what may you do here?_ `requireRole('ADMIN')` loads your
+  membership in `:orgId` from the database and rejects you if your role is too low.
 
-One `Product` model — everything a stocked item needs:
+Both live in `src/middleware/auth.ts`. The whole permission table is one file,
+`src/routes/orgs.routes.ts`:
 
-| field       | type      | notes                    |
-| ----------- | --------- | ------------------------ |
-| `id`        | Int       | autoincrement            |
-| `sku`       | String    | unique                   |
-| `name`      | String    |                          |
-| `quantity`  | Int       | defaults to `0`          |
-| `price`     | Decimal   | `10,2`, JSON as a string |
-| `createdAt` | DateTime  | set on insert            |
-| `updatedAt` | DateTime  | touched on every update  |
-
-## Auth
-
-`POST /auth/login` accepts one hard-coded account:
-
-```
-root@admin.com / rootpass
+```ts
+orgsRouter.get('/:orgId/products', requireRole(Role.MEMBER), listProducts);
+orgsRouter.post('/:orgId/products', requireRole(Role.ADMIN), createProduct);
+orgsRouter.patch('/:orgId/members/:userId', requireRole(Role.OWNER), updateMemberRole);
 ```
 
-It returns `{ token, user }` on success and `401` otherwise. Nothing verifies the
-token afterwards — the products routes stay open. The frontend guards its
-dashboard route with it, which is a UX guard, not security; real protection would
-need middleware on these routes.
+Roles are **not** put in the JWT. They're read from the database on every
+request, so promoting or removing someone takes effect immediately, without
+waiting for their token to expire.
+
+### Authorization at the data-access boundary
+
+Checking the role isn't enough on its own. Every product query is also scoped to
+the org the caller was authorized for:
+
+```ts
+prisma.product.update({ where: { id, orgId: req.membership.orgId }, data });
+```
+
+Without `orgId` in that `where`, an Acme admin could edit Globex product `9` by
+calling `PATCH /api/orgs/1/products/9`. With it, Prisma finds nothing and returns 404.
+
+Two more rules worth pointing out:
+
+- Not a member of the org → **404**, not 403. Don't confirm the org exists.
+- You can only invite into a role **below** your own (no privilege escalation).
+  The owner can't be demoted or removed.
+
+## Tokens
+
+|                 | access token                     | refresh token                             |
+| --------------- | -------------------------------- | ----------------------------------------- |
+| what            | JWT signed with `JWT_ACCESS_SECRET` | 32 random bytes, opaque                |
+| lifetime        | `ACCESS_TOKEN_TTL` (15m; `.env` uses 1m for class) | 7 days                  |
+| client keeps it | in memory (JS variable)          | `httpOnly` cookie — JS can't read it      |
+| server keeps it | nothing — it's stateless         | a **SHA-256 hash** in `RefreshToken`      |
+| sent as         | `Authorization: Bearer …`        | cookie, automatically                     |
+| revocable?      | no, it lives until it expires    | yes, delete the row                       |
+
+That table is the sessions-vs-JWT trade-off in one place: the access token is
+cheap to verify but can't be revoked, so it's kept short. The refresh token is a
+database-backed session that **can** be revoked.
+
+`src/lib/tokens.ts`:
+
+- **Rotation** — every `/api/auth/refresh` marks the old refresh token used and issues a new one.
+- **Reuse detection** — if a used token shows up again, assume it was stolen and
+  delete every session for that user. A 10-second grace window allows for two
+  tabs refreshing at the same moment.
+- **Hashing** — a leaked database dump doesn't contain usable refresh tokens.
+- **Logout** deletes the row. **Logout everywhere** deletes all of the user's rows.
+  Other devices keep working until their access token expires — that's the
+  trade-off from the table, and you can watch it happen.
+
+## Google sign-in
+
+1. In Google Cloud Console → APIs & Services → Credentials, open (or create) an
+   OAuth client of type **Web application**.
+2. Add the authorized redirect URI `http://localhost:5000/api/auth/google/callback`
+   (and `http://localhost:3001/api/auth/google/callback` for Docker).
+3. Put the client id and secret in `.env` as `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`.
+
+The flow (`src/lib/passport.ts`, `src/routes/auth.routes.ts`):
+
+```
+browser ──GET /api/auth/google──────────▶ API ──302──▶ Google consent screen
+Google ──GET /api/auth/google/callback?code─▶ API  (passport swaps code for profile)
+API: find user by googleId → or by email (link) → or create user + workspace
+API: set refresh cookie, 302 → CLIENT_URL/dashboard
+app: boots, calls /api/auth/refresh with the cookie, gets an access token
+```
+
+No token is ever put in the URL. Passport runs with `session: false`; our own
+refresh cookie is the session. Without Google credentials, the button sends you
+back to `/login?error=google_disabled`.
 
 ## Endpoints
 
-| method   | path            | body                              | success |
-| -------- | --------------- | --------------------------------- | ------- |
-| `GET`    | `/health`       | —                                 | 200     |
-| `POST`   | `/auth/login`   | `email`, `password`               | 200     |
-| `GET`    | `/products`     | —                                 | 200     |
-| `GET`    | `/products/:id` | —                                 | 200     |
-| `POST`   | `/products`     | `sku`, `name`, `price`, `quantity?` | 201   |
-| `PATCH`  | `/products/:id` | any subset of the four fields     | 200     |
-| `DELETE` | `/products/:id` | —                                 | 204     |
+Everything except `/health` is mounted under `/api`.
 
-`PATCH` only writes the fields present in the body, so a restock can send just
-`{"quantity": 7}` without clearing the rest of the row.
+| method   | path                              | who                 |
+| -------- | --------------------------------- | ------------------- |
+| `POST`   | `/auth/signup`                    | anyone              |
+| `POST`   | `/auth/login`                     | anyone              |
+| `POST`   | `/auth/refresh`                   | refresh cookie      |
+| `POST`   | `/auth/logout`                    | refresh cookie      |
+| `POST`   | `/auth/logout-all`                | signed in           |
+| `GET`    | `/auth/google`, `/auth/google/callback` | anyone        |
+| `GET`    | `/me`                             | signed in           |
+| `GET`    | `/orgs/:orgId/products`           | MEMBER+             |
+| `POST`   | `/orgs/:orgId/products`           | ADMIN+              |
+| `PATCH`  | `/orgs/:orgId/products/:id`       | ADMIN+              |
+| `DELETE` | `/orgs/:orgId/products/:id`       | ADMIN+              |
+| `GET`    | `/orgs/:orgId/members`            | MEMBER+             |
+| `PATCH`  | `/orgs/:orgId/members/:userId`    | OWNER               |
+| `DELETE` | `/orgs/:orgId/members/:userId`    | OWNER               |
+| `GET`    | `/orgs/:orgId/invites`            | ADMIN+              |
+| `POST`   | `/orgs/:orgId/invites`            | ADMIN+              |
+| `GET`    | `/invites/:token`                 | anyone (preview)    |
+| `POST`   | `/invites/:token/accept`          | signed in, matching email |
 
-### Examples
+Invites aren't emailed. The app shows a link to copy.
+
+### Try it with curl
 
 ```bash
-curl -X POST http://localhost:5000/products \
-  -H 'Content-Type: application/json' \
-  -d '{"sku":"KEY-001","name":"Mechanical Keyboard","quantity":12,"price":89.99}'
+TOKEN=$(curl -s -X POST localhost:5000/api/auth/login -H 'Content-Type: application/json' \
+  -d '{"email":"member@acme.test","password":"password123"}' | jq -r .accessToken)
 
-curl http://localhost:5000/products
-curl http://localhost:5000/products/1
-
-curl -X PATCH http://localhost:5000/products/1 \
-  -H 'Content-Type: application/json' -d '{"quantity":7}'
-
-curl -X DELETE http://localhost:5000/products/1
+curl localhost:5000/api/orgs/1/products -H "Authorization: Bearer $TOKEN"              # 200
+curl -X DELETE localhost:5000/api/orgs/1/products/1 -H "Authorization: Bearer $TOKEN"  # 403
+curl localhost:5000/api/orgs/2/products -H "Authorization: Bearer $TOKEN"              # 404
 ```
-
-## Errors
-
-All errors come back as `{ "error": "..." }`:
-
-| status | when                                       |
-| ------ | ------------------------------------------ |
-| 400    | non-numeric `:id`, or missing create field |
-| 404    | no product with that id                    |
-| 409    | `sku` already taken                        |
-| 500    | anything unexpected                        |
-
-## Seed data
-
-`npm run seed` clears the table and inserts 10 products (`prisma/seed.ts`). It
-deletes first, so it is safe to re-run. The spread is deliberate: healthy stock,
-a few low-stock rows (`STD-009` at 3, `MON-004` at 6), and one at zero
-(`CHR-010`) so out-of-stock cases have something to hit.
-
-Note that `price` is a `Decimal`, and JSON serialization drops trailing zeros —
-`24.50` in Postgres comes back as `"24.5"`. Format for display on the client.
 
 ## Layout
 
 ```
-server.ts                  entry point
-prisma/schema.prisma       Product model
-prisma/seed.ts             sample data
-prisma.config.ts           Prisma 7 config (schema + datasource)
-src/app.ts                 express app, routes, error middleware
-src/prisma.ts              shared PrismaClient (pg driver adapter)
-src/lib/http.ts            HttpError, async handle(), parseId()
-src/routes/                products.routes.ts
-src/controllers/           products.controller.ts
+prisma/schema.prisma        User, Organization, Membership, Invite, RefreshToken, Product
+prisma/seed.ts              demo data
+src/config.ts               env vars
+src/app.ts                  middleware, routers, error handler
+src/middleware/auth.ts      requireAuth, requireRole, roleRank
+src/lib/tokens.ts           JWTs, refresh rotation, cookies
+src/lib/passport.ts         Google strategy
+src/lib/users.ts            create user + their first workspace
+src/routes/                 auth, orgs (the permission table), invites
+src/controllers/            auth, products, members, invites
 ```

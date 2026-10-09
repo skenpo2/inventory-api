@@ -1,6 +1,3 @@
-// Inventory management schema.
-// learn more: https://pris.ly/d/prisma-schema
-
 generator client {
   provider = "prisma-client"
   output   = "../generated/prisma"
@@ -10,14 +7,81 @@ datasource db {
   provider = "postgresql"
 }
 
-// A single stocked item. One model keeps the API simple: everything an
-// inventory row needs lives here.
+enum Role {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+model User {
+  id           Int      @id @default(autoincrement())
+  email        String   @unique
+  name         String
+  passwordHash String?
+  googleId     String?  @unique
+  createdAt    DateTime @default(now())
+
+  memberships   Membership[]
+  refreshTokens RefreshToken[]
+}
+
+model Organization {
+  id        Int      @id @default(autoincrement())
+  name      String
+  createdAt DateTime @default(now())
+
+  memberships Membership[]
+  invites     Invite[]
+  products    Product[]
+}
+
+model Membership {
+  userId    Int
+  orgId     Int
+  role      Role     @default(MEMBER)
+  createdAt DateTime @default(now())
+
+  user User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@id([userId, orgId])
+}
+
+model Invite {
+  id         Int       @id @default(autoincrement())
+  token      String    @unique
+  email      String
+  role       Role      @default(MEMBER)
+  orgId      Int
+  expiresAt  DateTime
+  acceptedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+}
+
+model RefreshToken {
+  id        Int       @id @default(autoincrement())
+  tokenHash String    @unique
+  userId    Int
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
 model Product {
   id        Int      @id @default(autoincrement())
-  sku       String   @unique
+  orgId     Int
+  sku       String
   name      String
   quantity  Int      @default(0)
   price     Decimal  @db.Decimal(10, 2)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, sku])
 }

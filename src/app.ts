@@ -1,24 +1,31 @@
 import express from 'express';
-import type { Request, Response, NextFunction } from 'express';
-import { Prisma } from './prisma.js';
-import { HttpError } from './lib/http.js';
-import { productsRouter } from './routes/products.routes.js';
-import { authRouter } from './routes/auth.routes.js';
+import type { NextFunction, Request, Response } from 'express';
+import cookieParser from 'cookie-parser';
 import cors from 'cors';
+import { config } from './config.js';
+import { me } from './controllers/auth.controller.js';
+import { HttpError } from './lib/http.js';
+import { requireAuth } from './middleware/auth.js';
+import { Prisma } from './prisma.js';
+import { authRouter } from './routes/auth.routes.js';
+import { invitesRouter } from './routes/invites.routes.js';
+import { orgsRouter } from './routes/orgs.routes.js';
 
 export const app = express();
 
+app.use(cors({ origin: config.clientUrl, credentials: true }));
 app.use(express.json());
-app.use(cors());
+app.use(cookieParser());
 
 app.get('/health', (_req, res) => {
   res.json({ ok: true });
 });
 
-app.use('/auth', authRouter);
-app.use('/products', productsRouter);
+app.use('/api/auth', authRouter);
+app.get('/api/me', requireAuth, me);
+app.use('/api/orgs', orgsRouter);
+app.use('/api/invites', invitesRouter);
 
-// Turns our own errors and common Prisma errors into clean JSON responses.
 app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   if (err instanceof HttpError) {
     return res.status(err.status).json({ error: err.message });
@@ -26,12 +33,10 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
 
   if (err instanceof Prisma.PrismaClientKnownRequestError) {
     if (err.code === 'P2002') {
-      return res
-        .status(409)
-        .json({ error: 'That value must be unique', target: err.meta?.target });
+      return res.status(409).json({ error: 'That already exists' });
     }
     if (err.code === 'P2025') {
-      return res.status(404).json({ error: 'Record not found' });
+      return res.status(404).json({ error: 'Not found' });
     }
   }
 

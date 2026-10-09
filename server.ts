@@ -1,7 +1,6 @@
-import { app } from './src/app.js'
+import { app } from './src/app.js';
+import { config } from './src/config.js';
 
-const PORT = Number(process.env.PORT ?? 4001)
-
-app.listen(PORT, () => {
-  console.log(`Inventory API running on http://localhost:${PORT}`)
-})
+app.listen(config.port, () => {
+  console.log(`Inventory API running on http://localhost:${config.port}`);
+});

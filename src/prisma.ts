@@ -1,13 +1,10 @@
-// One shared PrismaClient for the whole app. It opens a connection pool,
-// so we create it once and import it everywhere.
-import 'dotenv/config'
-import { PrismaPg } from '@prisma/adapter-pg'
-import { PrismaClient } from '../generated/prisma/client.js'
+import 'dotenv/config';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { PrismaClient } from '../generated/prisma/client.js';
 
-// Prisma 7 talks to Postgres through a driver adapter. We point the pg driver
-// at the same DATABASE_URL the CLI uses for migrations.
-const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL })
+const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL });
 
-export const prisma = new PrismaClient({ adapter })
+export const prisma = new PrismaClient({ adapter });
 
-export { Prisma } from '../generated/prisma/client.js'
+export { Prisma, Role } from '../generated/prisma/client.js';
+export type { Membership, User } from '../generated/prisma/client.js';

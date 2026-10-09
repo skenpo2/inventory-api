@@ -29,6 +29,7 @@ services:
       # "db" is the service name above. Inside Compose, containers reach
       # each other by service name, and Postgres listens on 5432 there.
       DATABASE_URL: postgres://postgres:postgres@db:5432/inventory
+      JWT_ACCESS_SECRET: change-me-in-production
     ports:
       - "5000:5000"                    # http://localhost:5000 on your machine
     depends_on:
